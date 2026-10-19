@@ -1655,15 +1655,21 @@ export default function App() {
       });
 
       // 底部彙總列：比照範例檔第 50/51 列的排法——跟上面路線列一樣，
-      // 每天佔 7 欄，只是欄位意義換成「手揀總箱數／裝載箱數／EC出貨總箱數／拉爆總箱數／(略)／主線平均裝載／主線拉爆平均裝載」。
-      // 範例檔這個位置原本還有「爆量趟數」，但那項系統沒有對應資料來源，這裡保留欄位但不編造數字，留白。
+      // 每天佔 7 欄，只是欄位意義換成「手揀總箱數／裝載箱數／EC出貨總箱數／拉爆總箱數／爆量趟數／主線平均裝載／主線拉爆平均裝載」。
+      // 第 5 欄「爆量趟數」＝當天加派車趟數（車資÷1590）＋主線自揹趟數，跟下方「爆量車裝載率」用同一套趟數。
+      const overloadTripsForDay = (dateStr) => {
+        let trips = 0;
+        dispatchHistory.forEach(h => { if (h.date === dateStr && !h.isNormal) trips += (h.cost || 0) / 1590; });
+        selfCarryHistory.forEach(rec => { if (rec.date === dateStr) (rec.routes || []).forEach(r => { trips += r.trips || 0; }); });
+        return Math.round(trips * 100) / 100;
+      };
       const totalLabelRow = ['', '', '', '', '', '', ''];
       const totalValueRow = ['', '', '', '', '', '', ''];
       const dayTotals = []; // 保留每天的彙總數值，下面「出貨量/裝載率/...」那個區塊要重複用
       dayMetrics.forEach((d) => {
-        totalLabelRow.push('手揀\n總箱數', '裝載箱數', 'EC出貨\n總箱數', '拉爆\n總箱數', '', '主線\n平均裝載', '主線拉爆\n平均裝載');
+        totalLabelRow.push('手揀\n總箱數', '裝載箱數', 'EC出貨\n總箱數', '拉爆\n總箱數', '爆量趟數', '主線\n平均裝載', '主線拉爆\n平均裝載');
         if (!d.found) {
-          totalValueRow.push('尚未同步', '尚未同步', '尚未同步', '尚未同步', '', '尚未同步', '尚未同步');
+          totalValueRow.push('尚未同步', '尚未同步', '尚未同步', '尚未同步', '尚未同步', '尚未同步', '尚未同步');
           dayTotals.push({ found: false });
           return;
         }
@@ -1678,7 +1684,7 @@ export default function App() {
         const avgOriginalRate = avg(rateNums('originalRate'));
         const avgAfterRate = avg(rateNums('afterRate'));
         totalValueRow.push(
-          0, capacitySum, ecSum, overloadSum, '',
+          0, capacitySum, ecSum, overloadSum, overloadTripsForDay(d.date),
           avgOriginalRate === null ? '-' : avgOriginalRate.toFixed(2) + '%',
           avgAfterRate === null ? '-' : avgAfterRate.toFixed(2) + '%'
         );
