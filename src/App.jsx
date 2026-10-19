@@ -1502,6 +1502,29 @@ export default function App() {
     return worksheet;
   };
 
+  // ExcelJS 版的 json_to_sheet：第一列是欄名，數字套千分位，欄寬依內容長度估算
+  const addJsonSheet = (wb, name, rows) => {
+    const ws = wb.addWorksheet(name);
+    const keys = Object.keys(rows[0] || {});
+    ws.addRow(keys);
+    rows.forEach(r => ws.addRow(keys.map(k => r[k])));
+    ws.getRow(1).font = { bold: true };
+    keys.forEach((k, i) => {
+      const col = ws.getColumn(i + 1);
+      col.width = Math.max(10, ...rows.map(r => String(r[k] ?? '').length * 2), k.length * 2);
+      col.numFmt = '#,##0';
+      col.alignment = { vertical: 'middle' };
+    });
+    return ws;
+  };
+
+  const getImageSize = (src) => new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => resolve({ width: 0, height: 0 });
+    img.src = src;
+  });
+
   const handleExportAuditExcel = () => {
     if (!window.XLSX || previewList.length === 0) return;
     const exportData = previewList.map(row => ({
@@ -1528,29 +1551,58 @@ export default function App() {
 
   
 
-  const handleExportAllHistoryExcel = () => {
-    if (!window.XLSX || (filteredDispatchHistory.length === 0 && filteredRecycleHistory.length === 0 && filteredSelfCarryHistory.length === 0 && filteredNewStoreHistory.length === 0)) return;
-    const wb = window.XLSX.utils.book_new();
+  const handleExportAllHistoryExcel = async () => {
+    if ((filteredDispatchHistory.length === 0 && filteredRecycleHistory.length === 0 && filteredSelfCarryHistory.length === 0 && filteredNewStoreHistory.length === 0)) return;
+    // 用 ExcelJS 產生，因為 SheetJS 免費版不支援把圖片嵌進儲存格，新開店分頁需要放點交照片
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
     const dispatchRows = [];
     filteredDispatchHistory.forEach(record => {
       if (record.isNormal) { dispatchRows.push({ '對帳/進貨日期': record.date, '送出時間': record.time, '配送商': record.vendor, '加派代號': record.dispatchCode, '路線': '-', '路順': '-', '店名': '-', '箱數': 0, '外露': 0, '單店合計': 0, '車資費用 (元)': 0 }); }
       else { (Array.isArray(record.stores) ? record.stores : []).forEach(s => { dispatchRows.push({ '對帳/進貨日期': record.date, '送出時間': record.time, '配送商': record.vendor, '加派代號': record.dispatchCode, '路線': s.route, '路順': s.seq, '店名': s.store, '箱數': s.boxes, '外露': s.loose, '單店合計': s.boxes + s.loose, '車資費用 (元)': record.cost }); }); }
     });
-    if (dispatchRows.length > 0) window.XLSX.utils.book_append_sheet(wb, applyThousandsFormat(window.XLSX.utils.json_to_sheet(dispatchRows)), "加派車歷史紀錄");
+    if (dispatchRows.length > 0) addJsonSheet(wb, "加派車歷史紀錄", dispatchRows);
 
     const recycleRows = [];
     filteredRecycleHistory.forEach(record => { (Array.isArray(record.stores) ? record.stores : []).forEach(s => { recycleRows.push({ '對帳/進貨日期': record.date, '送出時間': record.time, '配送商': s.vendor, '路線': s.route, '路順': s.seq, '店名': s.store, '回收件數': s.qty, '備註': s.remarks, '整車費用 (元)': record.cost }); }); });
-    if (recycleRows.length > 0) window.XLSX.utils.book_append_sheet(wb, applyThousandsFormat(window.XLSX.utils.json_to_sheet(recycleRows)), "回收車歷史紀錄");
+    if (recycleRows.length > 0) addJsonSheet(wb, "回收車歷史紀錄", recycleRows);
 
     const selfCarryRows = [];
     filteredSelfCarryHistory.forEach(record => { (Array.isArray(record.routes) ? record.routes : []).forEach(r => { selfCarryRows.push({ '對帳/進貨日期': record.date, '送出時間': record.time, '自揹路線': r.route, '配送商': r.vendor, '標準裝載(260/160)': r.capacity, '原核算小計': r.originalSubtotal || '-', '差異': (r.originalSubtotal && r.capacity) ? (r.originalSubtotal - r.capacity) : '-', '自揹箱數': r.boxes, '超過標準裝載(超量)': r.excessBoxes != null ? r.excessBoxes : '-', '整趟數(1590/趟)': r.trips || 0, '零頭箱數': r.remainder != null ? r.remainder : '-', '零頭費用': r.remainderCost != null ? r.remainderCost : '-', '自揹費用 (元)': r.cost }); }); });
-    if (selfCarryRows.length > 0) window.XLSX.utils.book_append_sheet(wb, applyThousandsFormat(window.XLSX.utils.json_to_sheet(selfCarryRows)), "主線自揹歷史紀錄");
+    if (selfCarryRows.length > 0) addJsonSheet(wb, "主線自揹歷史紀錄", selfCarryRows);
 
     const newStoreRows = [];
     filteredNewStoreHistory.forEach(record => { (Array.isArray(record.stores) ? record.stores : []).forEach(s => { newStoreRows.push({ '對帳/進貨日期': record.date, '送出時間': record.time, '配送商': s.vendor, '路線': s.route, '路順': s.seq, '店名': s.store, '照片檔名': s.photo ? s.photo.name : '未上傳', '備註': s.remarks, '整車費用 (元)': record.cost }); }); });
-    if (newStoreRows.length > 0) window.XLSX.utils.book_append_sheet(wb, applyThousandsFormat(window.XLSX.utils.json_to_sheet(newStoreRows)), "新開店歷史紀錄");
+    if (newStoreRows.length > 0) {
+      // 「照片」欄放在照片檔名後面，每列設成固定高度，照片依原比例縮到格子裡
+      const photos = [];
+      filteredNewStoreHistory.forEach(record => { (Array.isArray(record.stores) ? record.stores : []).forEach(s => photos.push(s.photo)); });
+      const rowsWithPhoto = newStoreRows.map(r => {
+        const out = {};
+        Object.entries(r).forEach(([k, v]) => { out[k] = v; if (k === '照片檔名') out['照片'] = ''; });
+        return out;
+      });
+      const ws = addJsonSheet(wb, "新開店歷史紀錄", rowsWithPhoto);
+      const photoCol = Object.keys(rowsWithPhoto[0]).indexOf('照片');
+      const BOX_W = 200, BOX_H = 150;
+      ws.getColumn(photoCol + 1).width = 30;
+      for (let i = 0; i < photos.length; i++) {
+        const p = photos[i];
+        const match = p && typeof p.base64 === 'string' && p.base64.match(/^data:image\/(png|jpe?g|gif);base64,(.+)$/);
+        if (!match) { ws.getCell(i + 2, photoCol + 1).value = p ? '格式不支援' : '未上傳'; continue; }
+        const { width, height } = await getImageSize(p.base64);
+        const scale = Math.min(BOX_W / (width || BOX_W), BOX_H / (height || BOX_H));
+        const imageId = wb.addImage({ base64: match[2], extension: match[1] === 'jpg' ? 'jpeg' : match[1] });
+        ws.getRow(i + 2).height = BOX_H * 0.75 + 6;
+        ws.addImage(imageId, { tl: { col: photoCol, row: i + 1 }, ext: { width: (width || BOX_W) * scale, height: (height || BOX_H) * scale }, editAs: 'oneCell' });
+      }
+    }
 
-    window.XLSX.writeFile(wb, `全系統歷史對帳總表_${importDate}.xlsx`);
+    const buffer = await wb.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `全系統歷史對帳總表_${importDate}.xlsx`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // ==================== 週速報（裝載率計算）====================
